@@ -3,20 +3,19 @@
 import { getNews, fetchJSON } from '@/lib/actions/finnhub.actions';
 
 const FINNHUB_BASE_URL = 'https://finnhub.io/api/v1';
-// Tried in order — if one model is overloaded (503), fall back to the next.
 const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.5-flash'];
 const MAX_RETRIES_PER_MODEL = 2;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 type FinnhubQuote = {
-  c?: number; // current price
-  d?: number; // change
-  dp?: number; // percent change
-  h?: number; // high
-  l?: number; // low
-  o?: number; // open
-  pc?: number; // previous close
+  c?: number;
+  d?: number;
+  dp?: number;
+  h?: number;
+  l?: number;
+  o?: number;
+  pc?: number;
 };
 
 export type StockSummary = {
@@ -41,7 +40,6 @@ async function callGeminiModel(model: string, apiKey: string, prompt: string): P
 
   if (!res.ok) {
     const text = await res.text().catch(() => '');
-    // 503 (overloaded) and 429 (rate limited) are transient -> retryable
     if (res.status === 503 || res.status === 429) {
       throw new GeminiOverloadedError(`Gemini ${model} transient ${res.status}`);
     }
@@ -65,43 +63,49 @@ async function callGemini(prompt: string): Promise<string> {
       try {
         const text = await callGeminiModel(model, apiKey, prompt);
         if (text.trim()) return text;
-        // Empty response — treat as retryable
         lastTransient = new Error('Empty Gemini response');
       } catch (err) {
         if (err instanceof GeminiOverloadedError) {
           lastTransient = err;
-          // Exponential backoff before retrying the same model
           await sleep(500 * (attempt + 1));
           continue;
         }
-        throw err; // Non-transient error: stop immediately
+        throw err;
       }
     }
-    // This model is consistently overloaded — move on to the next fallback model
   }
 
   throw new GeminiOverloadedError(
-    `All Gemini models are busy right now: ${lastTransient instanceof Error ? lastTransient.message : 'unknown'}`
+    `All Gemini models are busy: ${lastTransient instanceof Error ? lastTransient.message : 'unknown'}`
   );
 }
 
 function parseSummary(raw: string): StockSummary {
-  // Strip markdown code fences if present
-  const cleaned = raw.replace(/```json/gi, '').replace(/```/g, '').trim();
+  // Strip markdown fences
+  const cleaned = raw
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
 
-  try {
-    const parsed = JSON.parse(cleaned);
-    const bullets = Array.isArray(parsed?.bullets)
-      ? parsed.bullets.map((b: unknown) => String(b)).filter(Boolean).slice(0, 3)
-      : [];
-    if (bullets.length > 0) {
-      return { sentiment: String(parsed?.sentiment || 'Neutral'), bullets };
+  console.log('Gemini raw response:', cleaned);
+
+  // Try to extract JSON from anywhere in the string
+  const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      const bullets = Array.isArray(parsed?.bullets)
+        ? parsed.bullets.map((b: unknown) => String(b)).filter(Boolean).slice(0, 3)
+        : [];
+      if (bullets.length > 0) {
+        return { sentiment: String(parsed?.sentiment || 'Neutral'), bullets };
+      }
+    } catch {
+      // fall through
     }
-  } catch {
-    // Fall through to line-based parsing
   }
 
-  // Fallback: split into lines / bullets
+  // Fallback: split into lines
   const bullets = cleaned
     .split('\n')
     .map((l) => l.replace(/^[-*•\d.\s]+/, '').trim())
@@ -118,7 +122,6 @@ export async function getStockSummary(symbol: string): Promise<{ success: boolea
   try {
     const token = process.env.FINNHUB_API_KEY ?? process.env.NEXT_PUBLIC_FINNHUB_API_KEY ?? '';
 
-    // Fetch quote and recent news in parallel
     const [quote, news] = await Promise.all([
       token
         ? fetchJSON<FinnhubQuote>(`${FINNHUB_BASE_URL}/quote?symbol=${encodeURIComponent(sym)}&token=${token}`, 60).catch(() => ({} as FinnhubQuote))
@@ -136,7 +139,7 @@ export async function getStockSummary(symbol: string): Promise<{ success: boolea
         ? `Current price: $${quote.c}${quote.dp != null ? ` (${quote.dp > 0 ? '+' : ''}${quote.dp.toFixed(2)}% today)` : ''}. Day range: $${quote.l ?? '?'} - $${quote.h ?? '?'}. Previous close: $${quote.pc ?? '?'}.`
         : 'Live price data is unavailable.';
 
-    const prompt = `You are a concise financial analyst. Summarize what's happening with the stock ${sym} for a regular retail investor.
+    const prompt = `You are a concise financial analyst. Summarize what is happening with the stock ${sym} for a retail investor.
 
 Market data:
 ${priceLine}
@@ -145,11 +148,10 @@ Recent news headlines:
 ${headlines || 'No recent news available.'}
 
 INSTRUCTIONS:
-- Write exactly 3 short bullet points in plain English (no jargon), each one sentence.
-- Base bullets on the price action and the news above. Do not invent specific numbers that are not provided.
-- Also classify overall short-term sentiment as exactly one of: "Bullish", "Bearish", or "Neutral".
-- Return ONLY valid JSON, no markdown, in this exact shape:
-{"sentiment":"Bullish|Bearish|Neutral","bullets":["...","...","..."]}`;
+- Write exactly 3 short bullet points in plain English, each one sentence.
+- Classify overall short-term sentiment as exactly one of: "Bullish", "Bearish", or "Neutral".
+- Return ONLY this exact JSON with no extra text, no markdown fences, no explanation:
+{"sentiment":"Neutral","bullets":["bullet 1","bullet 2","bullet 3"]}`;
 
     const raw = await callGemini(prompt);
     const summary = parseSummary(raw);
