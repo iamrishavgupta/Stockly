@@ -9,10 +9,10 @@ export const signUpWithEmail = async ({ email, password, fullName, country, inve
         const response = await auth.api.signUpEmail({ body: { email, password, name: fullName } })
 
         if(response) {
-            await inngest.send({
-                name: 'app/user.created',
-                data: { email, name: fullName, country, investmentGoals, riskTolerance, preferredIndustry }
-            })
+            // await inngest.send({
+            //     name: 'app/user.created',
+            //     data: { email, name: fullName, country, investmentGoals, riskTolerance, preferredIndustry }
+            // })
         }
 
         return { success: true, data: response }
