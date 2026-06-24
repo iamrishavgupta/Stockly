@@ -33,7 +33,7 @@ async function callGeminiModel(model: string, apiKey: string, prompt: string): P
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: { temperature: 0.4, maxOutputTokens: 512 },
+      generationConfig: { temperature: 0.4, maxOutputTokens: 1024 },
     }),
     cache: 'no-store',
   });
